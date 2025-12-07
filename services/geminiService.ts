@@ -6,10 +6,14 @@ const cleanJsonString = (str: string): string => {
   return str.replace(/```json/g, '').replace(/```/g, '').trim();
 };
 
-export const searchBusinesses = async (
-  query: string,
-  userLocation?: { latitude: number; longitude: number },
-  excludeNames: string[] = []
+const WAIT_TIME_MS = 2000;
+
+// Internal function to handle the actual API call with variable batch size
+const fetchFromGemini = async (
+  query: string, 
+  userLocation: { latitude: number; longitude: number } | undefined, 
+  excludeNames: string[],
+  batchSize: number
 ): Promise<BusinessLead[]> => {
   if (!process.env.API_KEY) {
     throw new Error("API Key not found in environment variables");
@@ -17,109 +21,142 @@ export const searchBusinesses = async (
 
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-  // Context for exclusion to find NEW records. Increased limit to support multiple pages.
-  const exclusionContext = excludeNames.length > 0 
-    ? `IMPORTANT: You must find DIFFERENT businesses than these ones (already found): ${JSON.stringify(excludeNames.slice(0, 500))}. Do not return any of these names.` 
+  // Limit exclusion list to recent 30 items to prevent context overload causing 500s
+  const shortExclusionList = excludeNames.slice(-30);
+  
+  const exclusionContext = shortExclusionList.length > 0 
+    ? `EXCLUDE these existing business names: ${JSON.stringify(shortExclusionList)}. You MUST find NEW businesses.` 
     : '';
 
-  // Prompt engineering to get structured data even with the tool
+  // Optimized prompt for email extraction
   const prompt = `
-    Find local businesses matching the query: "${query}".
+    ROLE: Expert Lead Researcher & Data Miner.
+    TASK: Compile a list of ${batchSize} local businesses for the query: "${query}".
+    
     ${exclusionContext}
-    
-    1. Use the Google Maps tool to find the business name, address, rating, phone number, and website URL.
-    2. Use the Google Search tool to:
-       - Find the business's official website if Maps is missing it.
-       - Look for a public email address (like info@, contact@) on their website.
-       - **Find their Instagram profile URL** (e.g. instagram.com/brandname).
-    
-    Return a STRICT JSON array of objects. 
-    Each object must strictly follow this schema:
-    {
-      "name": string,
-      "address": string,
-      "rating": number (or null),
-      "website": string (or null),
-      "phone": string (or null),
-      "email": string (or null),
-      "instagram": string (or null),
-      "googleMapsUri": string (or null),
-      "websiteQuality": "Good" | "Bad" | "Decent"
-    }
 
-    Rules:
-    - If you find a website in the Maps result, put it in the "website" field.
-    - If you find an email via Search, put it in the "email" field.
-    - If you find an Instagram link, put it in the "instagram" field.
-    - "websiteQuality" logic: 
-        * "Good" if they have a professional custom domain (e.g., .com, .io).
-        * "Decent" if they use a generic platform (e.g., facebook page as website, wixsite, business.site).
-        * "Bad" if no website is found.
-    - If a field is not found, use null.
-    - AIM FOR EXACTLY 40 RESULTS PER BATCH. This is a "page 2" request style, so volume is important.
-    - Do not include markdown formatting, just the raw JSON array.
+    EXECUTION STEPS:
+    1. **Discovery**: Use Google Maps to find ${batchSize} distinct businesses matching the query.
+    2. **Enrichment (CRITICAL)**: For EACH business found:
+       - **EMAIL**: You MUST perform a targeted Google Search for "Business Name email address" or "site:business_website.com email". Look for 'info@', 'contact@', 'hello@', 'support@'.
+       - **INSTAGRAM**: Search for "Business Name Instagram" to find their official handle.
+    3. **Formatting**: Return a strict JSON Array.
+
+    REQUIRED JSON STRUCTURE:
+    [
+      {
+        "name": "Business Name",
+        "address": "Full Address",
+        "rating": 4.5,
+        "phone": "Phone Number",
+        "website": "https://...",
+        "email": "extracted_email@domain.com",  <-- PRIORITY. Return null ONLY if absolutely no email is found after searching.
+        "instagram": "https://instagram.com/...",
+        "googleMapsUri": "https://maps.google.com/...",
+        "websiteQuality": "Good" | "Decent" | "Bad"
+      }
+    ]
+
+    QUALITY RULES:
+    - **EMAIL IS KING**: Make a genuine effort to find the email. Do not be lazy.
+    - **Website Quality**: "Good" = Custom domain (e.g. .com), "Decent" = Social/Wix/Linktree, "Bad" = No website.
+    - **Output**: JSON ONLY. No Markdown. No text before or after.
   `;
 
-  try {
-    const model = 'gemini-2.5-flash';
-    
-    // Configure tool with optional location biasing
-    const toolConfig = userLocation ? {
-      retrievalConfig: {
-        latLng: {
-          latitude: userLocation.latitude,
-          longitude: userLocation.longitude
-        }
+  const model = 'gemini-2.5-flash';
+  
+  // Configure tool with optional location biasing
+  const toolConfig = userLocation ? {
+    retrievalConfig: {
+      latLng: {
+        latitude: userLocation.latitude,
+        longitude: userLocation.longitude
       }
-    } : undefined;
+    }
+  } : undefined;
 
-    const response = await ai.models.generateContent({
-      model,
-      contents: prompt,
-      config: {
-        // Enable BOTH Maps and Search to maximize data richness
-        tools: [
-            { googleMaps: {} }, 
-            { googleSearch: {} }
-        ],
-        toolConfig: toolConfig,
-        // High quality, exhaustive search
-        systemInstruction: "You are a lead generation expert. Your goal is to find business contact details including emails and Instagram profiles. You must strictly follow the schema and quality grading rules. Always return as close to 40 results as possible.",
-      },
-    });
+  const response = await ai.models.generateContent({
+    model,
+    contents: prompt,
+    config: {
+      tools: [
+          { googleMaps: {} }, 
+          { googleSearch: {} }
+      ],
+      toolConfig: toolConfig,
+      systemInstruction: "You are a JSON-only lead extraction engine. Your goal is to maximize email fill rate.",
+    },
+  });
 
-    const text = response.text || "[]";
-    const cleanedText = cleanJsonString(text);
-    
-    let parsedData: any[] = [];
-    try {
-      parsedData = JSON.parse(cleanedText);
-    } catch (e) {
-      console.warn("Failed to parse JSON directly", e);
+  const text = response.text || "[]";
+  const cleanedText = cleanJsonString(text);
+  
+  let parsedData: any[] = [];
+  try {
+    parsedData = JSON.parse(cleanedText);
+  } catch (e) {
+    const match = cleanedText.match(/\[.*\]/s);
+    if (match) {
+      try {
+        parsedData = JSON.parse(match[0]);
+      } catch (e2) {
+          return [];
+      }
+    } else {
       return [];
     }
+  }
 
-    // Map to our internal type
-    if (Array.isArray(parsedData)) {
-      return parsedData.map((item, index) => ({
-        id: `lead-${Date.now()}-${index}`,
-        name: item.name || "Unknown Business",
-        address: item.address || "No address found",
-        rating: item.rating,
-        website: item.website,
-        phone: item.phone,
-        email: item.email,
-        instagram: item.instagram,
-        status: 'enriched', 
-        googleMapsUri: item.googleMapsUri,
-        websiteQuality: item.websiteQuality || (item.website ? 'Good' : 'Bad')
-      }));
+  if (Array.isArray(parsedData)) {
+    return parsedData.map((item, index) => ({
+      id: `lead-${Date.now()}-${index}`,
+      name: item.name || "Unknown Business",
+      address: item.address || "No address found",
+      rating: item.rating,
+      website: item.website,
+      phone: item.phone,
+      email: item.email,
+      instagram: item.instagram,
+      status: 'enriched', 
+      googleMapsUri: item.googleMapsUri,
+      websiteQuality: item.websiteQuality || (item.website ? 'Good' : 'Bad')
+    }));
+  }
+
+  return [];
+};
+
+export const searchBusinesses = async (
+  query: string,
+  userLocation?: { latitude: number; longitude: number },
+  excludeNames: string[] = []
+): Promise<BusinessLead[]> => {
+  
+  // Strategy: Try getting 40. If 500 error, try 20. If 500 error, try 10.
+  // This handles the "Internal Error" which often happens due to complexity/timeouts.
+  
+  try {
+    console.log("Attempting to fetch 40 leads...");
+    return await fetchFromGemini(query, userLocation, excludeNames, 40);
+  } catch (error: any) {
+    // Check if it's a 500 or generic internal error
+    if (error.status === 500 || error.code === 500 || error.message?.includes("Internal error")) {
+      console.warn("Batch of 40 failed (Internal Error). Retrying with 20...");
+      
+      // Wait a bit before retry
+      await new Promise(resolve => setTimeout(resolve, WAIT_TIME_MS));
+      
+      try {
+        return await fetchFromGemini(query, userLocation, excludeNames, 20);
+      } catch (error2: any) {
+        if (error2.status === 500 || error2.code === 500 || error2.message?.includes("Internal error")) {
+          console.warn("Batch of 20 failed. Retrying with 10...");
+          await new Promise(resolve => setTimeout(resolve, WAIT_TIME_MS));
+          return await fetchFromGemini(query, userLocation, excludeNames, 10);
+        }
+        throw error2;
+      }
     }
-
-    return [];
-
-  } catch (error) {
-    console.error("Gemini Search Error:", error);
     throw error;
   }
 };
