@@ -1,0 +1,7 @@
+{
+  "name": "LeadFlow AI Automation",
+  "description": "An intelligent workflow automation tool simulating n8n-style processes to discover business leads, extract contact info via Google Maps, and populate spreadsheets.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}

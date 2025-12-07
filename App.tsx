@@ -1,0 +1,294 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  Play, 
+  Settings2, 
+  Zap, 
+  Search, 
+  TableProperties, 
+  MapPin,
+  PauseOctagon,
+  RefreshCw,
+  Plus
+} from 'lucide-react';
+import PipelineNode from './components/PipelineNode';
+import ResultsTable from './components/ResultsTable';
+import { BusinessLead, NodeStatus, WorkflowNode } from './types';
+import { searchBusinesses } from './services/geminiService';
+
+const INITIAL_NODES: WorkflowNode[] = [
+  {
+    id: '1',
+    type: 'trigger',
+    label: 'Manual Trigger',
+    status: NodeStatus.IDLE,
+    icon: '⚡',
+    description: 'Workflow starts on click'
+  },
+  {
+    id: '2',
+    type: 'search',
+    label: 'Google Maps Search',
+    status: NodeStatus.IDLE,
+    icon: '🔍',
+    description: 'Finds businesses via Maps'
+  },
+  {
+    id: '3',
+    type: 'parser',
+    label: 'Data Extractor',
+    status: NodeStatus.IDLE,
+    icon: '⚙️',
+    description: 'Parses Name, Phone, URL'
+  },
+  {
+    id: '4',
+    type: 'sheet',
+    label: 'Google Sheets',
+    status: NodeStatus.IDLE,
+    icon: '📊',
+    description: 'Appends data to row'
+  }
+];
+
+export default function App() {
+  const [nodes, setNodes] = useState<WorkflowNode[]>(INITIAL_NODES);
+  const [searchQuery, setSearchQuery] = useState('Coffee shops');
+  const [searchLocation, setSearchLocation] = useState('New York');
+  const [leads, setLeads] = useState<BusinessLead[]>([]);
+  const [isRunning, setIsRunning] = useState(false);
+  const [userCoords, setUserCoords] = useState<{latitude: number, longitude: number} | undefined>(undefined);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Initialize Geolocation
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setUserCoords({
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude
+          });
+          // Optional: Reverse geocode here to set default location text, 
+          // but for now we just use the coords for the API
+        },
+        (error) => console.log('Geolocation denied or failed', error)
+      );
+    }
+  }, []);
+
+  const updateNodeStatus = (id: string, status: NodeStatus) => {
+    setNodes(prev => prev.map(n => n.id === id ? { ...n, status } : n));
+  };
+
+  const runWorkflow = async (isAppend: boolean = false) => {
+    if (isRunning) return;
+    setIsRunning(true);
+    if (!isAppend) {
+      setLeads([]); // Clear previous results only if not appending
+    }
+    setErrorMsg(null);
+
+    // Reset nodes visual state
+    setNodes(INITIAL_NODES.map(n => ({...n, status: NodeStatus.IDLE})));
+
+    try {
+      // Step 1: Trigger
+      updateNodeStatus('1', NodeStatus.RUNNING);
+      await new Promise(r => setTimeout(r, 600)); // Visual delay
+      updateNodeStatus('1', NodeStatus.COMPLETED);
+
+      // Step 2: Search (The real work)
+      updateNodeStatus('2', NodeStatus.RUNNING);
+      
+      const combinedQuery = `${searchQuery} in ${searchLocation}`;
+      // Collect names to exclude if appending
+      const excludeNames = isAppend ? leads.map(l => l.name) : [];
+      
+      const results = await searchBusinesses(combinedQuery, userCoords, excludeNames);
+      
+      updateNodeStatus('2', NodeStatus.COMPLETED);
+
+      if (results.length === 0 && isAppend) {
+          setErrorMsg("No new leads found in this area. Try changing the location.");
+      }
+
+      // Step 3: Parser (Simulated processing of results)
+      updateNodeStatus('3', NodeStatus.RUNNING);
+      await new Promise(r => setTimeout(r, 800)); // Simulate parsing time
+      
+      setLeads(prev => isAppend ? [...prev, ...results] : results);
+      
+      updateNodeStatus('3', NodeStatus.COMPLETED);
+
+      // Step 4: Sheet (Simulated save)
+      updateNodeStatus('4', NodeStatus.RUNNING);
+      await new Promise(r => setTimeout(r, 500)); 
+      updateNodeStatus('4', NodeStatus.COMPLETED);
+
+    } catch (error: any) {
+      console.error(error);
+      setErrorMsg(error.message || "An unknown error occurred");
+      // Mark current running node as error
+      setNodes(prev => {
+        const runningNode = prev.find(n => n.status === NodeStatus.RUNNING);
+        if (runningNode) {
+          return prev.map(n => n.id === runningNode.id ? { ...n, status: NodeStatus.ERROR } : n);
+        }
+        return prev;
+      });
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen font-sans flex flex-col">
+      {/* Header */}
+      <header className="h-16 border-b border-slate-700 bg-n8n-panel flex items-center px-6 justify-between sticky top-0 z-50">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-gradient-to-br from-n8n-primary to-n8n-secondary rounded flex items-center justify-center text-white font-bold text-lg">
+            LF
+          </div>
+          <h1 className="text-xl font-bold text-slate-100 tracking-tight">LeadFlow AI</h1>
+          <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-xs border border-slate-700">Beta</span>
+        </div>
+        
+        <div className="flex items-center gap-4">
+          <div className="text-xs text-slate-400 hidden sm:block">
+             API Status: <span className="text-emerald-400">● Connected</span>
+          </div>
+          <button className="p-2 hover:bg-slate-700 rounded-full text-slate-400 transition-colors">
+            <Settings2 className="w-5 h-5" />
+          </button>
+        </div>
+      </header>
+
+      {/* Main Content - Grid Layout */}
+      <main className="flex-grow p-4 lg:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 max-w-[1920px] mx-auto w-full">
+        
+        {/* Left Column: Workflow Config & Visualizer */}
+        <div className="lg:col-span-4 flex flex-col gap-6">
+          
+          {/* Config Card */}
+          <div className="bg-n8n-panel rounded-xl border border-slate-700 p-5 shadow-lg">
+            <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+              <Zap className="w-5 h-5 text-n8n-primary" /> Configuration
+            </h2>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wider">Target Business</label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                  <input 
+                    type="text" 
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full bg-n8n-dark border border-slate-600 rounded-lg py-2 pl-9 pr-3 text-sm text-white focus:outline-none focus:border-n8n-primary transition-colors"
+                    placeholder="e.g. Plumbers, Marketing Agencies"
+                    disabled={isRunning}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wider">Location</label>
+                <div className="relative">
+                  <MapPin className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                  <input 
+                    type="text" 
+                    value={searchLocation}
+                    onChange={(e) => setSearchLocation(e.target.value)}
+                    className="w-full bg-n8n-dark border border-slate-600 rounded-lg py-2 pl-9 pr-3 text-sm text-white focus:outline-none focus:border-n8n-primary transition-colors"
+                    placeholder="e.g. San Francisco, CA"
+                    disabled={isRunning}
+                  />
+                </div>
+              </div>
+              
+              <div className="pt-2 space-y-3">
+                <button 
+                  onClick={() => runWorkflow(false)}
+                  disabled={isRunning || !searchQuery}
+                  className={`
+                    w-full py-3 px-4 rounded-lg font-bold text-sm shadow-lg flex items-center justify-center gap-2 transition-all
+                    ${isRunning 
+                      ? 'bg-slate-700 text-slate-400 cursor-not-allowed' 
+                      : 'bg-gradient-to-r from-n8n-primary to-n8n-secondary hover:shadow-n8n-primary/25 hover:-translate-y-0.5 text-white'
+                    }
+                  `}
+                >
+                  {isRunning ? (
+                    <>
+                      <PauseOctagon className="w-4 h-4 animate-pulse" /> Processing...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4 fill-current" /> Execute Workflow
+                    </>
+                  )}
+                </button>
+
+                {leads.length > 0 && !isRunning && (
+                    <button 
+                        onClick={() => runWorkflow(true)}
+                        className="w-full py-2 px-4 rounded-lg font-medium text-sm border border-slate-600 hover:bg-slate-700 text-slate-300 flex items-center justify-center gap-2 transition-all"
+                    >
+                        <Plus className="w-4 h-4" /> Fetch More Results
+                    </button>
+                )}
+              </div>
+
+              {errorMsg && (
+                <div className="mt-3 p-3 bg-red-500/10 border border-red-500/20 rounded text-red-400 text-xs flex items-center gap-2">
+                   <PauseOctagon className="w-3 h-3" />
+                   {errorMsg}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Workflow Visualizer */}
+          <div className="bg-n8n-panel rounded-xl border border-slate-700 p-5 shadow-lg flex-grow flex flex-col">
+            <h2 className="text-lg font-semibold text-white mb-6 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-n8n-primary animate-pulse"></span>
+              Live Pipeline
+            </h2>
+            <div className="flex flex-col gap-4 relative pl-2">
+              {nodes.map((node, idx) => (
+                <PipelineNode 
+                  key={node.id} 
+                  node={node} 
+                  isLast={idx === nodes.length - 1}
+                  isActive={node.status === NodeStatus.RUNNING}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Right Column: Results */}
+        <div className="lg:col-span-8 flex flex-col h-[600px] lg:h-auto">
+          <div className="bg-n8n-panel rounded-t-xl border-x border-t border-slate-700 p-4 flex justify-between items-center">
+             <div className="flex items-center gap-2">
+                <TableProperties className="w-5 h-5 text-emerald-400" />
+                <h2 className="text-lg font-semibold text-white">Extracted Leads</h2>
+             </div>
+             <div className="flex gap-2">
+               <div className="bg-n8n-dark px-3 py-1 rounded text-xs text-slate-400 border border-slate-600">
+                 {leads.length > 0 ? `${leads.length} Found` : 'Ready'}
+               </div>
+             </div>
+          </div>
+          <div className="flex-grow relative">
+             <ResultsTable leads={leads} isLoading={nodes.some(n => n.id === '3' && n.status === NodeStatus.RUNNING)} />
+          </div>
+          <div className="bg-n8n-panel rounded-b-xl border-x border-b border-slate-700 p-2 text-center text-xs text-slate-500">
+            Powered by Gemini 2.5 Flash & Google Maps
+          </div>
+        </div>
+
+      </main>
+    </div>
+  );
+}
