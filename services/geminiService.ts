@@ -16,7 +16,7 @@ const cleanJsonString = (str: string): string => {
   return cleaned.trim();
 };
 
-const WAIT_TIME_MS = 1000;
+const WAIT_TIME_MS = 2000;
 
 // Internal function to handle the actual API call with variable batch size
 const fetchFromGemini = async (
@@ -31,7 +31,7 @@ const fetchFromGemini = async (
 
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-  // Limit exclusion list to recent 50 items
+  // Limit exclusion list to recent 50 items to save tokens
   const shortExclusionList = excludeNames.slice(-50);
   
   const exclusionContext = shortExclusionList.length > 0 
@@ -40,7 +40,7 @@ const fetchFromGemini = async (
 
   // Optimized prompt for SPEED and STABILITY
   const prompt = `
-    TASK: Find ${batchSize} local businesses for: "${query}".
+    TASK: Find exactly ${batchSize} local businesses for: "${query}".
     ${exclusionContext}
 
     INSTRUCTIONS:
@@ -49,7 +49,7 @@ const fetchFromGemini = async (
        - Email: Look for "info@", "contact@", "hello@" or "sales@" on their website or social snippets.
        - WhatsApp: Look for mobile numbers, "wa.me" links, or numbers labeled "WhatsApp".
        - Instagram: Find their official handle.
-    3. Return a JSON Array with exactly ${batchSize} items if possible.
+    3. Return a JSON Array with exactly ${batchSize} items. If you find fewer, return as many as found.
 
     JSON FORMAT:
     [
@@ -130,30 +130,44 @@ const fetchFromGemini = async (
 
 export const searchBusinesses = async (
   query: string,
-  userLocation?: { latitude: number; longitude: number },
-  excludeNames: string[] = []
+  userLocation: { latitude: number; longitude: number } | undefined,
+  excludeNames: string[] = [],
+  targetBatchSize: number = 20
 ): Promise<BusinessLead[]> => {
   
-  // Strategy: Start with 20.
-  // If that fails, try 10.
+  // Strategy: Try requested batch size.
+  // If it fails or returns 500/429, retry with a smaller batch (half).
   
   try {
-    console.log("Fetching batch of 20...");
-    const results = await fetchFromGemini(query, userLocation, excludeNames, 20);
+    console.log(`Fetching batch of ${targetBatchSize}...`);
+    const results = await fetchFromGemini(query, userLocation, excludeNames, targetBatchSize);
     if (results.length > 0) return results;
     
     throw new Error("No results found in first attempt");
 
   } catch (error: any) {
-    console.warn("Batch of 20 failed or returned empty. Retrying with 10...", error);
+    const isQuotaError = error.toString().includes('429') || error.toString().includes('quota');
+    if (isQuotaError) {
+       console.error("Quota Exceeded:", error);
+       throw new Error("Daily AI search quota exceeded. Please try again later.");
+    }
+
+    console.warn(`Batch of ${targetBatchSize} failed. Retrying with reduced batch...`, error);
+    
+    // Reduce batch size by half (min 5)
+    const fallbackBatchSize = Math.max(5, Math.floor(targetBatchSize / 2));
     
     // Wait a brief moment
     await new Promise(resolve => setTimeout(resolve, WAIT_TIME_MS));
     
     try {
-      return await fetchFromGemini(query, userLocation, excludeNames, 10);
+      console.log(`Retrying with ${fallbackBatchSize}...`);
+      return await fetchFromGemini(query, userLocation, excludeNames, fallbackBatchSize);
     } catch (error2: any) {
       console.error("All fetch attempts failed", error2);
+      if (error2.toString().includes('429')) {
+        throw new Error("Daily AI search quota exceeded. Please try again later.");
+      }
       throw error2; // Let the UI handle the error message
     }
   }

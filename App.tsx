@@ -10,7 +10,8 @@ import {
   RefreshCw,
   Plus,
   CheckCircle2,
-  Sparkles
+  Sparkles,
+  Layers
 } from 'lucide-react';
 import PipelineNode from './components/PipelineNode';
 import ResultsTable from './components/ResultsTable';
@@ -56,6 +57,7 @@ export default function App() {
   const [nodes, setNodes] = useState<WorkflowNode[]>(INITIAL_NODES);
   const [searchQuery, setSearchQuery] = useState('Coffee shops');
   const [searchLocation, setSearchLocation] = useState('New York');
+  const [batchSize, setBatchSize] = useState<number>(20); // Default Quota
   const [leads, setLeads] = useState<BusinessLead[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [userCoords, setUserCoords] = useState<{latitude: number, longitude: number} | undefined>(undefined);
@@ -107,7 +109,7 @@ export default function App() {
       // Collect names to exclude if appending
       const excludeNames = isAppend ? leads.map(l => l.name) : [];
       
-      const results = await searchBusinesses(combinedQuery, userCoords, excludeNames);
+      const results = await searchBusinesses(combinedQuery, userCoords, excludeNames, batchSize);
       
       updateNodeStatus('2', NodeStatus.COMPLETED);
 
@@ -247,6 +249,26 @@ export default function App() {
                   </datalist>
                 </div>
               </div>
+
+              {/* Batch Size Selector */}
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wider">Batch Quota (Results per run)</label>
+                <div className="relative">
+                  <Layers className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                  <select
+                    value={batchSize}
+                    onChange={(e) => setBatchSize(Number(e.target.value))}
+                    className="w-full bg-n8n-dark border border-slate-600 rounded-lg py-2 pl-9 pr-3 text-sm text-white focus:outline-none focus:border-n8n-primary transition-colors appearance-none cursor-pointer"
+                    disabled={isRunning}
+                  >
+                    <option value={10}>10 Leads (Fastest)</option>
+                    <option value={20}>20 Leads (Balanced)</option>
+                    <option value={30}>30 Leads (High)</option>
+                    <option value={40}>40 Leads (Intensive)</option>
+                    <option value={50}>50 Leads (Max)</option>
+                  </select>
+                </div>
+              </div>
               
               <div className="pt-2 space-y-3">
                 <button 
@@ -277,7 +299,7 @@ export default function App() {
                         className="w-full py-2.5 px-4 rounded-lg font-medium text-sm border border-slate-600 hover:bg-slate-700 hover:border-slate-500 text-emerald-400 flex items-center justify-center gap-2 transition-all group"
                     >
                         <RefreshCw className="w-4 h-4 group-hover:rotate-180 transition-transform duration-500" /> 
-                        Fetch Next Batch (+20)
+                        Fetch Next Batch (+{batchSize})
                     </button>
                 )}
               </div>
