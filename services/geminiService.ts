@@ -3,10 +3,20 @@ import { BusinessLead } from "../types";
 
 // Helper to sanitize JSON string if the model returns markdown code blocks
 const cleanJsonString = (str: string): string => {
-  return str.replace(/```json/g, '').replace(/```/g, '').trim();
+  // Remove markdown blocks
+  let cleaned = str.replace(/```json/g, '').replace(/```/g, '');
+  // Attempt to find the first '[' and last ']' to isolate the array
+  const firstBracket = cleaned.indexOf('[');
+  const lastBracket = cleaned.lastIndexOf(']');
+  
+  if (firstBracket !== -1 && lastBracket !== -1) {
+    cleaned = cleaned.substring(firstBracket, lastBracket + 1);
+  }
+  
+  return cleaned.trim();
 };
 
-const WAIT_TIME_MS = 2000;
+const WAIT_TIME_MS = 1000;
 
 // Internal function to handle the actual API call with variable batch size
 const fetchFromGemini = async (
@@ -21,51 +31,50 @@ const fetchFromGemini = async (
 
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-  // Limit exclusion list to recent 30 items to prevent context overload causing 500s
-  const shortExclusionList = excludeNames.slice(-30);
+  // Limit exclusion list to recent 50 items
+  const shortExclusionList = excludeNames.slice(-50);
   
   const exclusionContext = shortExclusionList.length > 0 
-    ? `EXCLUDE these existing business names: ${JSON.stringify(shortExclusionList)}. You MUST find NEW businesses.` 
+    ? `IMPORTANT: Exclude these previously found businesses: ${JSON.stringify(shortExclusionList)}.` 
     : '';
 
-  // Optimized prompt for email extraction
+  // Optimized prompt for SPEED and STABILITY
   const prompt = `
-    ROLE: Expert Lead Researcher & Data Miner.
-    TASK: Compile a list of ${batchSize} local businesses for the query: "${query}".
-    
+    TASK: Find ${batchSize} local businesses for: "${query}".
     ${exclusionContext}
 
-    EXECUTION STEPS:
-    1. **Discovery**: Use Google Maps to find ${batchSize} distinct businesses matching the query.
-    2. **Enrichment (CRITICAL)**: For EACH business found:
-       - **EMAIL**: You MUST perform a targeted Google Search for "Business Name email address" or "site:business_website.com email". Look for 'info@', 'contact@', 'hello@', 'support@'.
-       - **INSTAGRAM**: Search for "Business Name Instagram" to find their official handle.
-    3. **Formatting**: Return a strict JSON Array.
+    INSTRUCTIONS:
+    1. Use Google Maps to find businesses.
+    2. DEEP SEARCH for CONTACT INFO:
+       - Email: Look for "info@", "contact@", "hello@" or "sales@" on their website or social snippets.
+       - WhatsApp: Look for mobile numbers, "wa.me" links, or numbers labeled "WhatsApp".
+       - Instagram: Find their official handle.
+    3. Return a JSON Array with exactly ${batchSize} items if possible.
 
-    REQUIRED JSON STRUCTURE:
+    JSON FORMAT:
     [
       {
         "name": "Business Name",
-        "address": "Full Address",
+        "address": "Short Address",
         "rating": 4.5,
-        "phone": "Phone Number",
-        "website": "https://...",
-        "email": "extracted_email@domain.com",  <-- PRIORITY. Return null ONLY if absolutely no email is found after searching.
-        "instagram": "https://instagram.com/...",
-        "googleMapsUri": "https://maps.google.com/...",
+        "phone": "Phone",
+        "website": "URL",
+        "email": "email@domain.com" or null,
+        "instagram": "instagram_url" or null,
+        "whatsapp": "whatsapp_number" or null,
+        "googleMapsUri": "maps_url",
         "websiteQuality": "Good" | "Decent" | "Bad"
       }
     ]
-
-    QUALITY RULES:
-    - **EMAIL IS KING**: Make a genuine effort to find the email. Do not be lazy.
-    - **Website Quality**: "Good" = Custom domain (e.g. .com), "Decent" = Social/Wix/Linktree, "Bad" = No website.
-    - **Output**: JSON ONLY. No Markdown. No text before or after.
+    
+    CONSTRAINTS:
+    - Output ONLY valid JSON.
+    - If email/whatsapp is not found, use null.
+    - Speed is important.
   `;
 
   const model = 'gemini-2.5-flash';
   
-  // Configure tool with optional location biasing
   const toolConfig = userLocation ? {
     retrievalConfig: {
       latLng: {
@@ -84,7 +93,7 @@ const fetchFromGemini = async (
           { googleSearch: {} }
       ],
       toolConfig: toolConfig,
-      systemInstruction: "You are a JSON-only lead extraction engine. Your goal is to maximize email fill rate.",
+      systemInstruction: "You are a fast JSON lead extractor. You prioritize finding Emails and WhatsApp numbers.",
     },
   });
 
@@ -95,16 +104,8 @@ const fetchFromGemini = async (
   try {
     parsedData = JSON.parse(cleanedText);
   } catch (e) {
-    const match = cleanedText.match(/\[.*\]/s);
-    if (match) {
-      try {
-        parsedData = JSON.parse(match[0]);
-      } catch (e2) {
-          return [];
-      }
-    } else {
-      return [];
-    }
+    console.warn("JSON Parse Failed:", e, cleanedText);
+    return [];
   }
 
   if (Array.isArray(parsedData)) {
@@ -117,6 +118,7 @@ const fetchFromGemini = async (
       phone: item.phone,
       email: item.email,
       instagram: item.instagram,
+      whatsapp: item.whatsapp,
       status: 'enriched', 
       googleMapsUri: item.googleMapsUri,
       websiteQuality: item.websiteQuality || (item.website ? 'Good' : 'Bad')
@@ -132,31 +134,27 @@ export const searchBusinesses = async (
   excludeNames: string[] = []
 ): Promise<BusinessLead[]> => {
   
-  // Strategy: Try getting 40. If 500 error, try 20. If 500 error, try 10.
-  // This handles the "Internal Error" which often happens due to complexity/timeouts.
+  // Strategy: Start with 20.
+  // If that fails, try 10.
   
   try {
-    console.log("Attempting to fetch 40 leads...");
-    return await fetchFromGemini(query, userLocation, excludeNames, 40);
+    console.log("Fetching batch of 20...");
+    const results = await fetchFromGemini(query, userLocation, excludeNames, 20);
+    if (results.length > 0) return results;
+    
+    throw new Error("No results found in first attempt");
+
   } catch (error: any) {
-    // Check if it's a 500 or generic internal error
-    if (error.status === 500 || error.code === 500 || error.message?.includes("Internal error")) {
-      console.warn("Batch of 40 failed (Internal Error). Retrying with 20...");
-      
-      // Wait a bit before retry
-      await new Promise(resolve => setTimeout(resolve, WAIT_TIME_MS));
-      
-      try {
-        return await fetchFromGemini(query, userLocation, excludeNames, 20);
-      } catch (error2: any) {
-        if (error2.status === 500 || error2.code === 500 || error2.message?.includes("Internal error")) {
-          console.warn("Batch of 20 failed. Retrying with 10...");
-          await new Promise(resolve => setTimeout(resolve, WAIT_TIME_MS));
-          return await fetchFromGemini(query, userLocation, excludeNames, 10);
-        }
-        throw error2;
-      }
+    console.warn("Batch of 20 failed or returned empty. Retrying with 10...", error);
+    
+    // Wait a brief moment
+    await new Promise(resolve => setTimeout(resolve, WAIT_TIME_MS));
+    
+    try {
+      return await fetchFromGemini(query, userLocation, excludeNames, 10);
+    } catch (error2: any) {
+      console.error("All fetch attempts failed", error2);
+      throw error2; // Let the UI handle the error message
     }
-    throw error;
   }
 };

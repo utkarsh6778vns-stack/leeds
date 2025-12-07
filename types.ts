@@ -8,6 +8,7 @@ export interface BusinessLead {
   phone?: string;
   email?: string;
   instagram?: string;
+  whatsapp?: string;
   status: 'pending' | 'enriched' | 'failed';
   googleMapsUri?: string;
   websiteQuality?: 'Good' | 'Bad' | 'Decent';

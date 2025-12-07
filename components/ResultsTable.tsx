@@ -1,6 +1,6 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { BusinessLead } from '../types';
-import { Mail, Phone, MapPin, Globe, Star, FileSpreadsheet, ShieldCheck, ShieldAlert, Shield, Instagram, ExternalLink } from 'lucide-react';
+import { Mail, Phone, MapPin, Globe, Star, FileSpreadsheet, Instagram, ExternalLink, Check, ArrowRight, MessageCircle } from 'lucide-react';
 
 interface ResultsTableProps {
   leads: BusinessLead[];
@@ -9,6 +9,7 @@ interface ResultsTableProps {
 
 const ResultsTable: React.FC<ResultsTableProps> = ({ leads, isLoading }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [isCopied, setIsCopied] = useState(false);
 
   // Auto-scroll to bottom when new leads are added
   useEffect(() => {
@@ -52,76 +53,60 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ leads, isLoading }) => {
     }
   };
 
-  const downloadExcel = () => {
-    // HTML-based Excel export with proper hyperlink formatting
-    const tableContent = `
-      <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-      <head>
-        <meta charset="UTF-8">
-        <!--[if gte mso 9]>
-        <xml>
-          <x:ExcelWorkbook>
-            <x:ExcelWorksheets>
-              <x:ExcelWorksheet>
-                <x:Name>Leads</x:Name>
-                <x:WorksheetOptions>
-                  <x:DisplayGridlines/>
-                </x:WorksheetOptions>
-              </x:ExcelWorksheet>
-            </x:ExcelWorksheets>
-          </x:ExcelWorkbook>
-        </xml>
-        <![endif]-->
-        <style>
-          body { font-family: Arial, sans-serif; }
-          table { border-collapse: collapse; width: 100%; }
-          th { background-color: #2b303b; color: #ffffff; border: 1px solid #4b5563; padding: 10px; text-align: left; }
-          td { border: 1px solid #d1d5db; padding: 8px; vertical-align: middle; }
-          a { color: #2563eb; text-decoration: underline; }
-        </style>
-      </head>
-      <body>
-        <table>
-          <thead>
-            <tr>
-              <th>Business Name</th>
-              <th>Email</th>
-              <th>Phone</th>
-              <th>Website</th>
-              <th>Instagram</th>
-              <th>Web Quality</th>
-              <th>Rating</th>
-              <th>Address</th>
-              <th>Maps Link</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${leads.map(l => `
-              <tr>
-                <td><b>${l.name}</b></td>
-                <td>${l.email || ''}</td>
-                <td>${l.phone || ''}</td>
-                <td>${l.website ? `<a href="${l.website}" target="_blank">${l.website}</a>` : ''}</td>
-                <td>${l.instagram ? `<a href="${l.instagram}" target="_blank">${l.instagram}</a>` : ''}</td>
-                <td>${l.websiteQuality || ''}</td>
-                <td>${l.rating || ''}</td>
-                <td>${l.address}</td>
-                <td>${l.googleMapsUri ? `<a href="${l.googleMapsUri}" target="_blank">View Map</a>` : ''}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </body>
-      </html>
-    `;
+  const handleSendToSheets = () => {
+    // 1. Format headers and rows using Tab separators (standard for pasting into Sheets)
+    const headers = [
+      'Business Name',
+      'Email',
+      'Phone',
+      'WhatsApp',
+      'Website',
+      'Instagram',
+      'Web Quality',
+      'Rating',
+      'Address',
+      'Maps Link'
+    ].join('\t');
 
-    const blob = new Blob([tableContent], { type: 'application/vnd.ms-excel' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `LeadFlow_Export_${new Date().toISOString().slice(0,10)}.xls`;
-    a.click();
-    window.URL.revokeObjectURL(url);
+    const rows = leads.map(l => {
+      // Clean data to ensure it doesn't break the TSV format 
+      // Replace tabs, newlines, and multiple spaces with a single space
+      const clean = (str?: string | number) => 
+        str ? String(str).replace(/[\t\n\r]+/g, ' ').replace(/\s+/g, ' ').trim() : '';
+      
+      return [
+        clean(l.name),
+        clean(l.email),
+        clean(l.phone),
+        clean(l.whatsapp),
+        clean(l.website),
+        clean(l.instagram),
+        clean(l.websiteQuality),
+        clean(l.rating),
+        clean(l.address),
+        clean(l.googleMapsUri)
+      ].join('\t');
+    }).join('\n');
+
+    const tsvData = `${headers}\n${rows}`;
+
+    // 2. Copy to clipboard
+    navigator.clipboard.writeText(tsvData).then(() => {
+      setIsCopied(true);
+      
+      // Delay opening the window slightly to ensure the user registers the "Copied" message
+      setTimeout(() => {
+         // 3. Open new Google Sheet
+         window.open('https://docs.google.com/spreadsheets/create', '_blank');
+         
+         // Reset button state
+         setTimeout(() => setIsCopied(false), 4000);
+      }, 500);
+
+    }).catch(err => {
+      console.error('Failed to copy text: ', err);
+      alert('Could not copy to clipboard. Please allow clipboard access to use this feature.');
+    });
   };
 
   return (
@@ -131,14 +116,39 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ leads, isLoading }) => {
            <div className="w-3 h-3 rounded-full bg-emerald-500"></div>
            <span className="text-sm font-mono text-emerald-400">Live Data</span>
         </div>
-        <button 
-          onClick={downloadExcel}
-          className="text-xs bg-green-700 hover:bg-green-600 text-white px-3 py-2 rounded transition-colors flex items-center gap-2 font-medium shadow-lg hover:shadow-green-500/20"
-          disabled={leads.length === 0}
-        >
-          <FileSpreadsheet className="w-3 h-3" />
-          Download Excel (.xls)
-        </button>
+        
+        <div className="flex flex-col items-end">
+          <button 
+            onClick={handleSendToSheets}
+            disabled={leads.length === 0}
+            className={`
+              text-xs px-4 py-2 rounded transition-all flex items-center gap-2 font-medium shadow-lg
+              ${isCopied 
+                ? 'bg-emerald-600 text-white shadow-emerald-500/20 ring-1 ring-emerald-400' 
+                : 'bg-green-700 hover:bg-green-600 text-white hover:shadow-green-500/20'
+              }
+              disabled:opacity-50 disabled:cursor-not-allowed
+            `}
+          >
+            {isCopied ? (
+              <>
+                <Check className="w-3.5 h-3.5" />
+                <span>Copied! Now Paste (Ctrl+V)</span>
+              </>
+            ) : (
+              <>
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>Open in Google Sheets</span>
+                <ArrowRight className="w-3 h-3 opacity-60" />
+              </>
+            )}
+          </button>
+          {leads.length > 0 && !isCopied && (
+            <span className="text-[10px] text-slate-500 mt-1 mr-1">
+              Data auto-copies. You must Paste it.
+            </span>
+          )}
+        </div>
       </div>
       
       {leads.length === 0 && !isLoading ? (
@@ -156,6 +166,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ leads, isLoading }) => {
               <th className="p-3 font-semibold border-b border-slate-700">Business Name</th>
               <th className="p-3 font-semibold border-b border-slate-700">Email</th>
               <th className="p-3 font-semibold border-b border-slate-700">Phone</th>
+              <th className="p-3 font-semibold border-b border-slate-700">WhatsApp</th>
               <th className="p-3 font-semibold border-b border-slate-700">Website</th>
               <th className="p-3 font-semibold border-b border-slate-700">Instagram</th>
               <th className="p-3 font-semibold border-b border-slate-700">Quality</th>
@@ -184,6 +195,14 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ leads, isLoading }) => {
                         <div className="flex items-center gap-2 select-all">
                              <Phone className="w-3 h-3 text-slate-500" />
                              {lead.phone}
+                        </div>
+                    ) : <span className="text-slate-600">-</span>}
+                </td>
+                <td className="p-3 text-slate-300">
+                    {lead.whatsapp ? (
+                        <div className="flex items-center gap-2 select-all text-green-400">
+                             <MessageCircle className="w-3 h-3 flex-shrink-0" />
+                             {lead.whatsapp}
                         </div>
                     ) : <span className="text-slate-600">-</span>}
                 </td>
@@ -230,6 +249,7 @@ const ResultsTable: React.FC<ResultsTableProps> = ({ leads, isLoading }) => {
                     <td className="p-3"><div className="h-3 w-4 bg-slate-700/50 rounded mx-auto"></div></td>
                     <td className="p-3"><div className="h-3 w-32 bg-slate-700/50 rounded"></div></td>
                     <td className="p-3"><div className="h-3 w-24 bg-slate-700/50 rounded"></div></td>
+                    <td className="p-3"><div className="h-3 w-20 bg-slate-700/50 rounded"></div></td>
                     <td className="p-3"><div className="h-3 w-20 bg-slate-700/50 rounded"></div></td>
                     <td className="p-3"><div className="h-3 w-20 bg-slate-700/50 rounded"></div></td>
                     <td className="p-3"><div className="h-3 w-16 bg-slate-700/50 rounded"></div></td>

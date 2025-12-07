@@ -9,7 +9,8 @@ import {
   PauseOctagon,
   RefreshCw,
   Plus,
-  CheckCircle2
+  CheckCircle2,
+  Sparkles
 } from 'lucide-react';
 import PipelineNode from './components/PipelineNode';
 import ResultsTable from './components/ResultsTable';
@@ -111,8 +112,7 @@ export default function App() {
       updateNodeStatus('2', NodeStatus.COMPLETED);
 
       if (results.length === 0 && isAppend) {
-          setErrorMsg("No new leads found in this area. Try changing the query or location.");
-          // Don't fail the workflow, just stop
+          setErrorMsg("No new leads found. Try a different query.");
       } else if (results.length === 0 && !isAppend) {
           setErrorMsg("No leads found. Please try a different query.");
           updateNodeStatus('2', NodeStatus.ERROR);
@@ -121,13 +121,15 @@ export default function App() {
 
       // Step 3: Parser (Simulated processing of results)
       updateNodeStatus('3', NodeStatus.RUNNING);
-      // Simulate "Enrichment" processing delay per item
-      await new Promise(r => setTimeout(r, 600)); 
+      // Simulate "Enrichment" processing delay
+      await new Promise(r => setTimeout(r, 500)); 
       
       if (results.length > 0) {
         setLeads(prev => {
-            const newState = isAppend ? [...prev, ...results] : results;
-            return newState;
+            // Filter duplicates just in case
+            const existingIds = new Set(prev.map(l => l.name));
+            const uniqueNew = results.filter(r => !existingIds.has(r.name));
+            return [...prev, ...uniqueNew];
         });
         setLastAddedCount(results.length);
       }
@@ -190,7 +192,7 @@ export default function App() {
               <Zap className="w-5 h-5 text-n8n-primary" /> Configuration
             </h2>
             
-            <div className="space-y-4">
+            <div className="space-y-5">
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wider">Target Business</label>
                 <div className="relative">
@@ -199,10 +201,23 @@ export default function App() {
                     type="text" 
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
+                    list="business-suggestions"
                     className="w-full bg-n8n-dark border border-slate-600 rounded-lg py-2 pl-9 pr-3 text-sm text-white focus:outline-none focus:border-n8n-primary transition-colors"
                     placeholder="e.g. Plumbers, Marketing Agencies"
                     disabled={isRunning}
                   />
+                  <datalist id="business-suggestions">
+                    <option value="Real Estate Agents" />
+                    <option value="Dentists" />
+                    <option value="Marketing Agencies" />
+                    <option value="Plumbers" />
+                    <option value="Coffee Shops" />
+                    <option value="Gyms & Fitness" />
+                    <option value="Law Firms" />
+                    <option value="Interior Designers" />
+                    <option value="Tech Startups" />
+                    <option value="Restaurants" />
+                  </datalist>
                 </div>
               </div>
 
@@ -214,10 +229,22 @@ export default function App() {
                     type="text" 
                     value={searchLocation}
                     onChange={(e) => setSearchLocation(e.target.value)}
+                    list="location-suggestions"
                     className="w-full bg-n8n-dark border border-slate-600 rounded-lg py-2 pl-9 pr-3 text-sm text-white focus:outline-none focus:border-n8n-primary transition-colors"
                     placeholder="e.g. San Francisco, CA"
                     disabled={isRunning}
                   />
+                  <datalist id="location-suggestions">
+                    <option value="New York, NY" />
+                    <option value="Los Angeles, CA" />
+                    <option value="London, UK" />
+                    <option value="Toronto, Canada" />
+                    <option value="Sydney, Australia" />
+                    <option value="Dubai, UAE" />
+                    <option value="San Francisco, CA" />
+                    <option value="Miami, FL" />
+                    <option value="Chicago, IL" />
+                  </datalist>
                 </div>
               </div>
               
@@ -250,7 +277,7 @@ export default function App() {
                         className="w-full py-2.5 px-4 rounded-lg font-medium text-sm border border-slate-600 hover:bg-slate-700 hover:border-slate-500 text-emerald-400 flex items-center justify-center gap-2 transition-all group"
                     >
                         <RefreshCw className="w-4 h-4 group-hover:rotate-180 transition-transform duration-500" /> 
-                        Fetch Next Batch (+40)
+                        Fetch Next Batch (+20)
                     </button>
                 )}
               </div>
